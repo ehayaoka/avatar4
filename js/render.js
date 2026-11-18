@@ -52,6 +52,8 @@ class Stage {
     g.translate(W / 2 + (c.x || 0) + (s.dx || 0), H - (c.y || 0) + (s.dy || 0) + sink);
     g.rotate(rot);
     g.drawImage(bmp, -w / 2, -h, w, h);
+    // 頭を動かして画像が持ち上がっても下に隙間ができないよう、画像のいちばん下の行を下へ引き伸ばす
+    if ((c.y || 0) <= 0) g.drawImage(bmp, 0, bmp.height - 1, bmp.width, 1, -w / 2, -0.5, w, 400);
     g.setTransform(1, 0, 0, 1, 0, 0);
   }
 }

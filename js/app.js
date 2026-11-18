@@ -542,6 +542,9 @@ async function init() {
   try { await loadThumbs(); } catch (e) { toast('画像の保存領域を使えません（シークレットウィンドウでは使えないことがあります）。', true); }
   renderSlots(); await stage.loadImages(); updateGuide(null);
   publish('normal', 'closed', null);
+  // css/app.css が古いままだとガイドが崩れるので知らせる（ブラウザのキャッシュ・アップロード漏れ）
+  if (!getComputedStyle(document.documentElement).getPropertyValue('--kaochara-css').includes('20261118b'))
+    toast('css/app.css が古いままです。GitHub に最新の css フォルダをアップロードし、Shift を押しながら再読み込みしてください。', true);
   try { await initModel(); }
   catch (e) { console.error(e); pill('#camStatus', '顔判定：読み込み失敗', 'ng'); toast('顔判定の準備に失敗しました。ページを再読み込みしてください：' + e.message, true); }
 }
