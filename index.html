@@ -24,8 +24,19 @@
   <section id="stageWrap">
     <canvas id="cv" width="1920" height="1080"></canvas>
     <div id="monitor">
-      <video id="video" playsinline muted></video>
-      <div id="monLabel">カメラ停止中</div>
+      <div id="camBox">
+        <video id="video" playsinline muted></video>
+        <canvas id="ov"></canvas>
+        <div id="monLabel">カメラ停止中</div>
+      </div>
+      <div id="guide">
+        <div class="gh">
+          <div class="gthumb"><img id="gThumb" alt=""></div>
+          <div><small>いまの出力</small><b id="gNow">—</b></div>
+        </div>
+        <div class="gcap"><span>こうすると</span><span>しきい値 ┃</span><span>こう変わる</span></div>
+        <div id="gRows"></div>
+      </div>
     </div>
     <div id="countdown" class="hide"></div>
   </section>
@@ -78,7 +89,7 @@
     <div class="card">
       <h2>カメラ</h2>
       <div class="row"><label for="selCam">使うカメラ</label><select id="selCam"><option value="">標準のカメラ</option></select></div>
-      <div class="row"><label class="check"><input id="chkMonitor" type="checkbox"> カメラ映像を左下に表示（<kbd>M</kbd>）</label></div>
+      <div class="row"><label class="check"><input id="chkMonitor" type="checkbox"> カメラ映像とガイドを左下に表示（<kbd>M</kbd>）</label></div>
       <p class="note">カメラの映像はこのパソコンの中だけで処理され、どこにも送られません。</p>
     </div>
   </aside>

@@ -86,6 +86,7 @@ function stopCamera() {
   $('#btnCam').textContent = '▶ カメラ開始'; $('#btnCam').classList.add('primary');
   if (landmarker) pill('#camStatus', '顔判定：カメラ停止中', 'wait');
   $('#monLabel').textContent = 'カメラ停止中'; $('#monLabel').className = '';
+  if (typeof og !== 'undefined') { og.clearRect(0, 0, ov.width, ov.height); updateGuide(null); }
 }
 async function listCameras() {
   try {
@@ -108,7 +109,7 @@ function schedule() {
 document.addEventListener('visibilitychange', () => { scheduled = false; schedule(); });
 
 const judge = new DETECT.Judge();
-let lastVideoTime = -1, lastTs = 0, lastSeen = 0, lastFeat = null, lastPose = null, manual = null;
+let lastR = null, lastVideoTime = -1, lastTs = 0, lastSeen = 0, lastFeat = null, lastPose = null, manual = null;
 const sm = { rot: 0, dx: 0, dy: 0, bounce: 0 };
 let frames = 0, fpsT = performance.now(), calib = null;
 function step() {
@@ -134,7 +135,7 @@ function onResult(res, now) {
     if (lost > 300) {
       pill('#camStatus', '顔判定：顔が見つかりません', 'ng'); $('#monLabel').textContent = '顔が見つかりません'; $('#monLabel').className = 'lost';
       if (lost > 1500) judge.reset();
-      relax(); publish(judge.emotion, 'closed', null);
+      relax(); publish(judge.emotion, 'closed', null); updateGuide(null); drawOverlay(null);
     }
     return;
   }
@@ -144,15 +145,17 @@ function onResult(res, now) {
   const p = res.faceLandmarks && res.faceLandmarks[0] ? DETECT.pose(res.faceLandmarks[0]) : null; lastPose = p;
   if (calib) { calib.f.push(f); if (p) calib.p.push(p); }
   const sc = DETECT.scores(f, S.base || undefined);
-  const r = judge.update(sc, S.thr, now, S.holdMs);
+  const r = judge.update(sc, S.thr, now, S.holdMs); lastR = r;
   pill('#camStatus', '顔判定：動作中', 'ok'); $('#monLabel').textContent = `${emoLabel(r.emotion)}・口${r.mouth === 'open' ? '開' : '閉'}`; $('#monLabel').className = '';
   updateMeters(sc, r);
   publish(r.emotion, r.mouth, p);
+  const lm = res.faceLandmarks && res.faceLandmarks[0];
+  updateGuide(r, sc.mouth / Math.max(S.thr.mouth, 1e-3)); drawOverlay(lm, r);
 }
 function relax() { sm.rot *= 0.9; sm.dx *= 0.9; sm.dy *= 0.9; }
 function publish(emotion, mouth, p) {
   if (p) {
-    const bp = S.basePose || { roll: 0, yaw: 0, pitch: 0.55 }, k = S.motion, sg = S.mirror ? -1 : 1;
+    const bp = S.basePose || { roll: 0, yaw: 0, pitch: 0.65 }, k = S.motion, sg = S.mirror ? -1 : 1;
     const clamp = (v, a) => Math.max(-a, Math.min(a, v));
     const rot = clamp(sg * (p.roll - bp.roll) * k, 12);
     const dx = clamp(sg * (p.yaw - bp.yaw) * 500 * k, 200);
@@ -164,6 +167,105 @@ function publish(emotion, mouth, p) {
   sendState({ emotion: emo, mouth, rot: sm.rot, dx: sm.dx, dy: sm.dy + sm.bounce });
   const nowEl = $('#now'); nowEl.textContent = `${emoLabel(emo)}・口${mouth === 'open' ? '開' : '閉'}${manual ? '（固定）' : ''}`; nowEl.className = 'now' + (manual ? ' manual' : '');
   renderFaceButtons();
+}
+
+
+/* ---------- カメラ横のガイド（顔の動き → 画像の変化） ---------- */
+const GUIDE = [
+  { id: 'mouth', act: '口を開ける', to: '口「開」', color: '#fb923c' },
+  { id: 'happy', act: '口角を上げる', to: '喜び', color: '#facc15' },
+  { id: 'angry', act: '眉を寄せる・目を細める', to: '怒り', color: '#f87171' },
+  { id: 'troubled', act: '眉頭だけ上げる', to: '困り', color: '#c084fc' },
+  { id: 'surprised', act: '眉を上げる・目を見開く', to: '驚き', color: '#38bdf8' },
+  { sep: true },
+  { id: 'rot', act: '首をかしげる', to: '傾く', color: '#4ade80', pose: true, max: 12 },
+  { id: 'dx', act: '顔を左右に向ける', to: '左右に動く', color: '#4ade80', pose: true, max: 200 },
+  { id: 'dy', act: 'うなずく・見上げる', to: '上下に動く', color: '#4ade80', pose: true, max: 80 },
+];
+const gEls = {};
+function buildGuide() {
+  const box = $('#gRows'); box.textContent = '';
+  for (const g of GUIDE) {
+    if (g.sep) { box.append(el('div', 'gsep')); continue; }
+    const row = el('div', 'grow' + (g.pose ? ' pose' : '')), d = el('span', 'gd'), dot = el('i');
+    dot.style.background = g.color; d.append(dot, g.act); d.title = g.act;
+    const bar = el('div', 'gb'), fill = el('b'); fill.style.background = g.color; bar.append(fill, el('u'));
+    const res = el('span', 'gr', '→ ' + g.to);
+    row.append(d, bar, res); box.append(row); gEls[g.id] = { row, fill, res, g };
+  }
+}
+function guideThumb(emotion, mouth) {
+  return thumbs.get(imgKey(emotion, mouth)) || thumbs.get(imgKey(emotion, 'closed')) || thumbs.get(imgKey('normal', mouth)) || thumbs.get(imgKey('normal', 'closed')) || '';
+}
+function updateGuide(r, mouthRatio) {
+  const on = !!r;
+  $('#guide').classList.toggle('off', !on);
+  for (const id in gEls) {
+    const { row, fill, res, g } = gEls[id];
+    if (!g.pose) {
+      const v = on ? (id === 'mouth' ? mouthRatio : r.ratios[id]) : 0;   // 1 = しきい値
+      fill.style.left = '0'; fill.style.width = Math.min(100, v * 50) + '%';
+      const act = on && (id === 'mouth' ? r.mouth === 'open' : r.emotion === id);
+      row.classList.toggle('on', act);
+      res.textContent = (act ? '✓ ' : '→ ') + g.to;
+    } else {
+      const v = Math.max(-1, Math.min(1, (sm[id] || 0) / g.max));
+      fill.style.left = (50 + Math.min(0, v) * 50) + '%'; fill.style.width = Math.abs(v) * 50 + '%';
+      const act = on && Math.abs(v) > 0.25;
+      row.classList.toggle('on', act);
+      const dir = id === 'rot' ? (v > 0 ? '右に傾く' : '左に傾く') : id === 'dx' ? (v > 0 ? '右へ動く' : '左へ動く') : (v > 0 ? '下へ動く' : '上へ動く');
+      res.textContent = act ? '✓ ' + dir : '→ ' + g.to;
+    }
+  }
+  const emo = manual || state.emotion;
+  $('#gNow').textContent = `${emoLabel(emo)}・口${state.mouth === 'open' ? '開' : '閉'}${manual ? '（固定）' : ''}`;
+  const url = guideThumb(emo, state.mouth), img = $('#gThumb');
+  if (url) { if (img.getAttribute('src') !== url) img.src = url; } else img.removeAttribute('src');
+}
+
+/* カメラ映像の上に、判定に使っている顔のパーツを色分けして描く */
+const LM = {
+  lips: [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146, 61],
+  innerLips: [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 78],
+  eyeR: [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7, 33],
+  eyeL: [263, 466, 388, 387, 386, 385, 384, 398, 362, 382, 381, 380, 374, 373, 390, 249, 263],
+  browR: [46, 53, 52, 65, 55], browL: [276, 283, 282, 295, 285],
+  browRin: 55, browLin: 285,
+};
+const ov = $('#ov'), og = ov.getContext('2d');
+function drawOverlay(lm, r) {
+  const W = ov.clientWidth, H = ov.clientHeight, dpr = window.devicePixelRatio || 1;
+  if (ov.width !== Math.round(W * dpr) || ov.height !== Math.round(H * dpr)) { ov.width = Math.round(W * dpr); ov.height = Math.round(H * dpr); }
+  og.setTransform(dpr, 0, 0, dpr, 0, 0); og.clearRect(0, 0, W, H);
+  if (!lm || !r) return;
+  const vw = video.videoWidth || 640, vh = video.videoHeight || 480, k = Math.max(W / vw, H / vh);
+  const ox = (W - vw * k) / 2, oy = (H - vh * k) / 2;
+  const P = i => [ox + lm[i].x * vw * k, oy + lm[i].y * vh * k];
+  const line = (idx, color, w) => { og.beginPath(); idx.forEach((i, n) => { const [x, y] = P(i); n ? og.lineTo(x, y) : og.moveTo(x, y); }); og.strokeStyle = color; og.lineWidth = w; og.stroke(); };
+  const dot = (i, color, rad) => { const [x, y] = P(i); og.beginPath(); og.arc(x, y, rad, 0, 7); og.fillStyle = color; og.fill(); };
+  const col = id => GUIDE.find(g => g.id === id).color, dim = 'rgba(255,255,255,.55)';
+  const strong = id => r.emotion === id;
+  // 眉：怒り・困り・驚きのどれに一番近いかで色を変える
+  const browId = ['angry', 'troubled', 'surprised'].reduce((a, b) => (r.ratios[b] > r.ratios[a] ? b : a));
+  const browOn = r.ratios[browId] >= 0.5, browCol = browOn ? col(browId) : dim, bw = strong(browId) ? 3 : 2;
+  line(LM.browR, browCol, bw); line(LM.browL, browCol, bw);
+  if (browId === 'troubled' && browOn) { dot(LM.browRin, browCol, 4); dot(LM.browLin, browCol, 4); }
+  // 目：見開き→驚き、細め→怒り
+  const eyeCol = r.ratios.surprised >= 0.5 && browId === 'surprised' ? col('surprised') : r.ratios.angry >= 0.5 && browId === 'angry' ? col('angry') : dim;
+  line(LM.eyeR, eyeCol, 1.5); line(LM.eyeL, eyeCol, 1.5);
+  // 口：開閉と口角
+  const mOpen = state.mouth === 'open';
+  line(LM.lips, mOpen ? col('mouth') : dim, mOpen ? 3 : 1.5);
+  if (mOpen) line(LM.innerLips, col('mouth'), 1.5);
+  const smileOn = r.ratios.happy >= 0.5;
+  dot(61, smileOn ? col('happy') : dim, smileOn ? 5 : 2.5); dot(291, smileOn ? col('happy') : dim, smileOn ? 5 : 2.5);
+  // 頭の傾き：目を結ぶ線（緑）と、水平の基準線（点線）
+  const [x1, y1] = P(33), [x2, y2] = P(263), cx = (x1 + x2) / 2, cy = (y1 + y2) / 2, len = Math.hypot(x2 - x1, y2 - y1) * 0.9;
+  og.setLineDash([4, 4]); og.beginPath(); og.moveTo(cx - len, cy); og.lineTo(cx + len, cy); og.strokeStyle = 'rgba(255,255,255,.4)'; og.lineWidth = 1; og.stroke(); og.setLineDash([]);
+  const a = Math.atan2(y2 - y1, x2 - x1), tilt = Math.abs(sm.rot) / 12 > 0.25;
+  og.beginPath(); og.moveTo(cx - Math.cos(a) * len, cy - Math.sin(a) * len); og.lineTo(cx + Math.cos(a) * len, cy + Math.sin(a) * len);
+  og.strokeStyle = tilt ? col('rot') : 'rgba(74,222,128,.45)'; og.lineWidth = tilt ? 2.5 : 1.5; og.stroke();
+  dot(1, Math.abs(sm.dx) / 200 > 0.25 || Math.abs(sm.dy) / 80 > 0.25 ? col('dx') : 'rgba(74,222,128,.6)', 4);
 }
 
 /* ---------- メーター（判定の強さとしきい値） ---------- */
@@ -212,7 +314,7 @@ async function calibrate() {
 }
 
 /* ---------- 表情の固定 ---------- */
-function setManual(id) { manual = id; if (!running) publish(id || 'normal', 'closed', null); renderFaceButtons(); }
+function setManual(id) { manual = id; if (!running) publish(id || 'normal', 'closed', null); renderFaceButtons(); updateGuide(running ? lastR : null); }
 function renderFaceButtons() {
   const box = $('#faceButtons'); const want = (manual || 'auto');
   if (box.dataset.on === want && box.children.length) return;
@@ -270,7 +372,7 @@ function imageWarnings() {
   return warn;
 }
 async function afterImagesChanged(msgs) {
-  await stage.loadImages(); ch.postMessage({ type: 'images' }); renderSlots();
+  await stage.loadImages(); ch.postMessage({ type: 'images' }); renderSlots(); updateGuide(running ? lastR : null);
   const warn = imageWarnings();
   if (msgs && warn.size) {
     const kinds = new Set([...warn.values()].flat());
@@ -435,15 +537,15 @@ function bind() {
 
 /* ---------- 起動 ---------- */
 async function init() {
-  buildMeters(); bind(); renderSettings(); renderFaceButtons(); sendConfig();
+  buildMeters(); buildGuide(); bind(); renderSettings(); renderFaceButtons(); sendConfig();
   ch.postMessage({ type: 'who' });
   try { await loadThumbs(); } catch (e) { toast('画像の保存領域を使えません（シークレットウィンドウでは使えないことがあります）。', true); }
-  renderSlots(); await stage.loadImages();
+  renderSlots(); await stage.loadImages(); updateGuide(null);
   publish('normal', 'closed', null);
   try { await initModel(); }
   catch (e) { console.error(e); pill('#camStatus', '顔判定：読み込み失敗', 'ng'); toast('顔判定の準備に失敗しました。ページを再読み込みしてください：' + e.message, true); }
 }
 // ページを閉じる・再読み込みするときは、カメラと顔判定を止めてメモリを返す
 window.addEventListener('pagehide', () => { stopCamera(); try { landmarker && landmarker.close(); } catch (e) {} });
-window.__app = { get S() { return S; }, judge, get state() { return state; }, get feat() { return lastFeat; }, startCamera, stopCamera, calibrate };
+window.__app = { get S() { return S; }, judge, get state() { return state; }, get feat() { return lastFeat; }, get pose() { return lastPose; }, get sm() { return sm; }, startCamera, stopCamera, calibrate };
 init();
